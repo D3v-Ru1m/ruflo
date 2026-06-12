@@ -466,9 +466,22 @@ const postEditCommand: Command = {
         timestamp: Date.now(),
       });
 
+      // #2352: the MCP handler returns `{success: false, error: "..."}` on
+      // validation failure (e.g. unsupported path shape) without throwing.
+      // Surface that explicitly instead of always printing the success line —
+      // Windows users were seeing `[OK]` while nothing reached the learning
+      // pipeline because absolute paths were rejected upstream.
+      const mcpFailed = result && (result as { success?: boolean }).success === false;
+      const mcpError = (result as { error?: string } | undefined)?.error;
+
       if (ctx.flags.format === 'json') {
         output.printJson(result);
-        return { success: true, data: result };
+        return { success: !mcpFailed, exitCode: mcpFailed ? 1 : 0, data: result };
+      }
+
+      if (mcpFailed) {
+        output.printError(`Post-edit hook failed: ${mcpError || 'unknown error'}`);
+        return { success: false, exitCode: 1 };
       }
 
       output.writeln();
@@ -1925,6 +1938,19 @@ const postTaskCommand: Command = {
       short: 'a',
       description: 'Agent that executed the task',
       type: 'string'
+    },
+    {
+      // ADR-147 P2: nested-subagent spawn-tree capture
+      name: 'parent-agent-id',
+      description: 'ID of the parent agent (from Claude Code\'s parent_agent_id OTel span tag). Omit for top-level work.',
+      type: 'string',
+      required: false
+    },
+    {
+      name: 'depth',
+      description: 'Chain depth from root lead session (0 = lead, 1+ = subagent). Used by ADR-147 P3 depth-aware guardrail.',
+      type: 'number',
+      required: false
     }
   ],
   examples: [
@@ -1955,6 +1981,9 @@ const postTaskCommand: Command = {
         quality: ctx.flags.quality,
         agent: ctx.flags.agent,
         timestamp: Date.now(),
+        // ADR-147 P2: forward spawn-tree lineage if caller supplied it
+        parentAgentId: ctx.flags.parentAgentId,
+        depth: ctx.flags.depth,
       });
 
       if (ctx.flags.format === 'json') {
